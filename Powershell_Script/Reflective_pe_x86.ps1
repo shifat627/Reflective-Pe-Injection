@@ -1,4 +1,4 @@
-function Invoke-Reflective_x86
+function Invoke-Reflective
 {
 param(
 [Parameter(Position = 0,Mandatory = $true)]
