@@ -521,16 +521,16 @@ public static extern bool CloseHandle(IntPtr Handle);
 
             )
             
-            $base_rel_type = 10
+            $base_rel_type = 0xa000
 
             if([System.IntPtr]::Size -eq 4)
             {
-                $base_rel_type = 3
+                $base_rel_type = 0x3000
             }
 
             if($base_rva -eq 0)
             {
-                return 0
+                return $false
             }
 
             $delta = Sub-SignedIntAsUnsigned $pe_base $orig_base
@@ -544,17 +544,17 @@ public static extern bool CloseHandle(IntPtr Handle);
                 $number_of_entry = ($reloc_struct.SizeOfBlock - ([UInt32]8)) /2
                 $entry_ptr = Add-SignedIntAsUnsigned $reloc_ptr 8
 
-                echo "Number Of Entry $number_of_entry"
+                Write-Verbose "Number Of Entry $number_of_entry"
                 for($i=0;$i -lt $number_of_entry ; $i++)
                 {
                     $type = Convert-Int16ToUInt16 $([System.Runtime.InteropServices.Marshal]::ReadInt16($entry_ptr))
-                    if( $($type -shr 12) -eq $base_rel_type)
+                    if( $($type -band $base_rel_type) -eq $base_rel_type)
                     {
                         $offset = $type -band 0xfff
                         $src_addr = Add-SignedIntAsUnsigned $addr $offset
                         $data = Add-SignedIntAsUnsigned $([System.Runtime.InteropServices.Marshal]::ReadIntPtr($src_addr)) $delta
                         [System.Runtime.InteropServices.Marshal]::WriteIntPtr($src_addr,$data)
-                        echo "`t Offset: $([System.Convert]::ToString($offset,16))"
+                        Write-Verbose "`t Offset: $([System.Convert]::ToString($offset,16))"
                     }
                     $entry_ptr = Add-SignedIntAsUnsigned $entry_ptr 2
                 }
@@ -562,7 +562,7 @@ public static extern bool CloseHandle(IntPtr Handle);
                 $reloc_struct = [System.Runtime.InteropServices.Marshal]::PtrToStructure($reloc_ptr,[Type][PE.IMAGE_BASE_RELOCATION])
             }
 
-            return 1
+            return $true
         }
 
 
@@ -587,7 +587,7 @@ public static extern bool CloseHandle(IntPtr Handle);
 
             if($import_rva -eq 0)
             {
-                return 0
+                return $true
             }
 
             $import_ptr = Add-SignedIntAsUnsigned $pe_base $(Convert-UIntToInt $import_rva)
@@ -599,11 +599,11 @@ public static extern bool CloseHandle(IntPtr Handle);
                 $dll = $win32_Func::LoadLibraryA($dll_name)
                 if ($dll -eq 0)
                 {
-                    echo "[-]Failed To Load $dll_name"
-                    return 0
+                    Write-Verbose "[-]Failed To Load $dll_name"
+                    return $false
                 }
 
-                echo "`n[+]From $dll_name"
+                Write-Verbose "`n[+]From $dll_name"
                 $Othunk = Add-SignedIntAsUnsigned $pe_base $(Convert-UIntToInt $import_struct.OriginalFirstThunk)
                 $Fthunk = Add-SignedIntAsUnsigned $pe_base $(Convert-UIntToInt $import_struct.FirstThunk)
 
@@ -618,18 +618,26 @@ public static extern bool CloseHandle(IntPtr Handle);
                     if($AddressOfData.ToUInt64() -band $ordinal_flag)
                     {
                         $func_addr = $win32_Func::GetProcAddress($dll,$($AddressOfData -band 0xffff))
+                        if($func_addr -eq 0)
+                        {
+                            return $false
+                        }
                         [System.Runtime.InteropServices.Marshal]::WriteIntPtr($Fthunk,$func_addr)
 
-                        echo "[+]Loading Function Using Ordinal $($AddressOfData -band 0xffff)"
+                        Write-Verbose "[+]Loading Function Using Ordinal $($AddressOfData -band 0xffff)"
                     }
                     else 
                     {
                         $func_name = [System.Runtime.InteropServices.Marshal]::PtrToStringAnsi($(Add-SignedIntAsUnsigned $pe_base $(Convert-UIntToInt $AddressOfData)) +2)
                         $func_addr = $win32_Func::GetProcAddress($dll,$func_name)
+                        if($func_addr -eq 0)
+                        {
+                            return $false
+                        }
                         [System.Runtime.InteropServices.Marshal]::WriteIntPtr($Fthunk,$func_addr)
                         
                         
-                        echo "[+]Loading $func_name"
+                        Write-Verbose "[+]Loading $func_name"
                     }
 
                     $Othunk = Add-SignedIntAsUnsigned $Othunk $([IntPtr]::Size)
@@ -641,6 +649,7 @@ public static extern bool CloseHandle(IntPtr Handle);
                 $import_struct = [System.Runtime.InteropServices.Marshal]::PtrToStructure($import_ptr,[Type][PE.IMAGE_IMPORT_DESCRIPTOR])
             }
             
+            return $true
         }
     
 
@@ -660,7 +669,7 @@ public static extern bool CloseHandle(IntPtr Handle);
 
             if( $tls_rva -eq 0)
             {
-                return 0
+                return $true
             }
 
             $tls_ptr = Add-SignedIntAsUnsigned $pe_base $(Convert-UIntToInt $tls_rva)
@@ -670,7 +679,7 @@ public static extern bool CloseHandle(IntPtr Handle);
 
             if($(Convert-UIntToInt $tls_callback_ptr) -eq 0)
             {
-                return 1
+                return $true
             }
             $func_addr = [System.Runtime.InteropServices.Marshal]::ReadIntPtr($tls_callback_ptr)
 
@@ -683,7 +692,7 @@ public static extern bool CloseHandle(IntPtr Handle);
                 $func_addr = [System.Runtime.InteropServices.Marshal]::ReadIntPtr($tls_callback_ptr)
             }
             
-            return 1
+            return $true
         }
 
         function Execute-Entry {
@@ -703,7 +712,7 @@ public static extern bool CloseHandle(IntPtr Handle);
             )
             
             $dll_deleg = Get-DelegateType @([System.IntPtr],[UInt32],[System.IntPtr]) ([bool])
-            $exe_deleg = Get-DelegateType @([IntPtr]) ([void])
+            $exe_deleg = Get-DelegateType @([IntPtr]) ([bool])
 
 
             if($addessofentry -eq 0)
@@ -715,13 +724,13 @@ public static extern bool CloseHandle(IntPtr Handle);
 
             if($Charactaristic -band 0x2000)
             {
-                echo "[!]File Is Dll"
+                Write-Verbose "[!]File Is Dll"
                 $exec_func = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($entry_addr, $dll_deleg)
                 $exec_func.Invoke($pe_base,1,0)
             }
             else
             {
-                echo "[!]File is Exe"
+                Write-Verbose "[!]File is Exe"
                 $exec_func = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($entry_addr, $exe_deleg)
                 $exec_func.Invoke(0)
             }
@@ -742,20 +751,20 @@ public static extern bool CloseHandle(IntPtr Handle);
         [System.Runtime.InteropServices.Marshal]::Copy($pe_bytes,0,$pe_buf,$pe_bytes.Length)
     }
     catch {
-        Write-Output "failed To Allocate Memory Or Failed To Copy Into Memory";return
+        Write-Verbose "failed To Allocate Memory Or Failed To Copy Into Memory";return
     }
 
 
     $dos_struct = [System.Runtime.InteropServices.Marshal]::PtrToStructure($pe_buf,[Type][PE.IMAGE_DOS_HEADER])
     if($dos_struct.e_magic -ne 23117)
     {
-        Write-Output "Invalid File";[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf);return
+        Write-Verbose "Invalid File";[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf);return
     }
 
     $nt_struct = [System.Runtime.InteropServices.Marshal]::PtrToStructure($(Add-SignedIntAsUnsigned $pe_buf $(Convert-UIntToInt $dos_struct.e_lfanew)),[Type][PE.IMAGE_NT_HEADERS])
     if($nt_struct.OptionalHeader.Magic -ne [PE.MagicType]::IMAGE_NT_OPTIONAL_HDR64_MAGIC)
     {
-        Write-Output "This is not x64 pe";[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf);return
+        Write-Verbose "This is not x64 pe";[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf);return
     }
     $require_relocation = 0
     $pe_base = $win32_Func::VirtualAlloc($(Convert-UIntToInt $nt_struct.OptionalHeader.ImageBase),$nt_struct.OptionalHeader.SizeOfImage,0x00001000 -bor 0x00002000,0x40)
@@ -766,14 +775,14 @@ public static extern bool CloseHandle(IntPtr Handle);
         $pe_base = $win32_Func::VirtualAlloc(0,$nt_struct.OptionalHeader.SizeOfImage,0x00001000 -bor 0x00002000,0x40)
         if($pe_base -eq 0 )
         {
-            Write-Output "Failed To Allocate Memory";[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf);return
+            Write-Verbose "Failed To Allocate Memory";[System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf);return
         }
     }
 
-    echo "Writing Header"
+    Write-Verbose "Writing Header"
     $win32_Func::WriteProcessMemory($cur_proc,$pe_base,$pe_buf,$nt_struct.OptionalHeader.SizeOfHeaders,[ref]([UInt32]0)) | Out-Null
 
-    echo 'Writing Sections'
+    Write-Verbose 'Writing Sections'
     $sec_ptr = $(Add-SignedIntAsUnsigned $pe_buf $(Convert-UIntToInt $dos_struct.e_lfanew))
     $sec_ptr = Add-SignedIntAsUnsigned $sec_ptr $([System.Runtime.InteropServices.Marshal]::SizeOf([Type][PE.IMAGE_NT_HEADERS]))
 
@@ -784,30 +793,35 @@ public static extern bool CloseHandle(IntPtr Handle);
         $src = Add-SignedIntAsUnsigned $pe_buf $(Convert-UIntToInt $sec_struct.PointerToRawData)
         $dest = Add-SignedIntAsUnsigned $pe_base $(Convert-UIntToInt $sec_struct.VirtualAddress)
 
-        $name = [System.String]::new($sec_struct.Name,0,8)
-        echo "[+]Coping $name"
+        #$name = [System.String]::new($sec_struct.Name,0,8)
+        Write-Verbose "[+]Coping $(-join $sec_struct.Name)"
         $win32_Func::WriteProcessMemory($cur_proc,$dest,$src,$sec_struct.SizeOfRawData,[ref]([UInt32]0)) | Out-Null
         $sec_ptr = Add-SignedIntAsUnsigned $sec_ptr $([System.Runtime.InteropServices.Marshal]::SizeOf([Type][PE.IMAGE_SECTION_HEADER]))
     }
 
     [System.Runtime.InteropServices.Marshal]::FreeHGlobal($pe_buf)
-    $load_status = 1
+    $load_status = $true
     if($require_relocation -eq 1)
     {
-        echo "`n[+]Relocating Base"
+        Write-Verbose "`n[+]Relocating Base"
         $load_status = Fix-Relocation $pe_base $nt_struct.OptionalHeader.BaseRelocationTable.VirtualAddress $(Convert-UIntToInt $nt_struct.OptionalHeader.ImageBase)
     }
     
-    echo "[+]Loading Imports"
-    $load_status = Load-Import $pe_base $nt_struct.OptionalHeader.ImportTable.VirtualAddress
-
-    echo "[+]Calling TLS Callbacks"
-    $load_status = Call-Tls $pe_base $nt_struct.OptionalHeader.TLSTable.VirtualAddress
-
-    if($load_status -eq 1)
+    if($load_status -eq $true)
     {
-        Execute-Entry $pe_buf $nt_struct.OptionalHeader.AddressOfEntryPoint $nt_struct.Fileheader.Characteristics | Out-Null
+        Write-Verbose "[+]Loading Imports"
+        $load_status = Load-Import $pe_base $nt_struct.OptionalHeader.ImportTable.VirtualAddress
+
+        if($load_status -eq $true)
+        {
+            Write-Verbose "[+]Calling TLS Callbacks"
+            Call-Tls $pe_base $nt_struct.OptionalHeader.TLSTable.VirtualAddress | Out-Null
+            Execute-Entry $pe_buf $nt_struct.OptionalHeader.AddressOfEntryPoint $nt_struct.Fileheader.Characteristics | Out-Null
+        }
+
+
     }
+    
     
 
     $win32_Func::VirtualFree($pe_base,([UInt32]0),0x00008000) | Out-Null
